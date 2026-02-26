@@ -1,0 +1,125 @@
+//@version=5
+indicator("Gold Bouncer: ULTIMATE PRO V3", overlay=true, max_bars_back=1000)
+
+// ═══════════════════════════════════════════════════════
+// SETTINGS
+// ═══════════════════════════════════════════════════════
+atrLength      = input.int(14, "ATR Lookback")
+atrMult        = input.float(1.0, "Expansion Mult")
+imbalanceRatio = input.float(2.8, "Imbalance Ratio")
+stackedBars    = input.int(2, "Stacked Bars")
+memoryLookback = input.int(10, "Max Signal Window")
+clusterWindow  = input.int(3, "Cluster Proximity")
+
+// ═══════════════════════════════════════════════════════
+// HEIKIN ASHI CANDLES
+// ═══════════════════════════════════════════════════════
+ha_close = (open + high + low + close) / 4
+ha_open  = float(na)
+ha_open  := na(ha_open[1]) ? (open + close) / 2 : (ha_open[1] + ha_close[1]) / 2
+ha_high  = math.max(high, math.max(ha_open, ha_close))
+ha_low   = math.min(low,  math.min(ha_open, ha_close))
+
+// ═══════════════════════════════════════════════════════
+// CORE CALCULATIONS
+// ═══════════════════════════════════════════════════════
+atr      = ta.atr(atrLength)
+bodySize = math.abs(ha_close - ha_open)
+
+isBullishBar = ha_close > ha_open
+barRange     = math.max(syminfo.mintick, ha_high - ha_low)
+buyerVol     = isBullishBar ? volume * ((ha_close - ha_low) / barRange) : volume * ((ha_high - ha_close) / barRange) * 0.3
+sellerVol    = not isBullishBar ? volume * ((ha_high - ha_close) / barRange) : volume * ((ha_close - ha_low) / barRange) * 0.3
+barDelta     = buyerVol - sellerVol
+
+var float sessionDelta = 0.0
+if (hour == 5 or hour == 17) and minute == 0
+    sessionDelta := 0.0
+sessionDelta += barDelta
+
+var int bStack = 0
+var int sStack = 0
+bStack := (sellerVol > 0 and buyerVol / sellerVol >= imbalanceRatio) ? bStack + 1 : 0
+sStack := (buyerVol > 0 and sellerVol / buyerVol >= imbalanceRatio) ? sStack + 1 : 0
+bool rawImbalance = (bStack >= stackedBars or sStack >= stackedBars)
+
+bool imbActive    = ta.barssince(rawImbalance) <= memoryLookback
+bool deltaMomentum = math.abs(barDelta) > ta.sma(math.abs(barDelta), 20) * 1.1
+bool hasExpansion  = bodySize >= (atr * atrMult)
+
+bool clusterMatch = ta.barssince(deltaMomentum) <= clusterWindow and ta.barssince(hasExpansion) <= clusterWindow
+
+var int lastDir = 0
+bool isNewDir = false
+if rawImbalance
+    int currentDir = (bStack >= stackedBars) ? 1 : -1
+    if currentDir != lastDir
+        isNewDir := true
+        lastDir  := currentDir
+
+int triScore = 0
+if imbActive
+    triScore += 1
+if deltaMomentum
+    triScore += 1
+if hasExpansion
+    triScore += 1
+
+bool match3 = triScore == 3 and clusterMatch and isNewDir
+bool match2 = triScore == 2 and clusterMatch and isNewDir
+
+bool buy3  = match3 and lastDir == 1
+bool sell3 = match3 and lastDir == -1
+bool buy2  = match2 and not match3 and lastDir == 1
+bool sell2 = match2 and not match3 and lastDir == -1
+
+// ═══════════════════════════════════════════════════════
+// VISUALS
+// ═══════════════════════════════════════════════════════
+plotshape(buy3,  "3/3 Buy",  shape.triangleup,   location.belowbar, color.lime,                  size=size.small, text="3/3")
+plotshape(sell3, "3/3 Sell", shape.triangledown,  location.abovebar, color.red,                   size=size.small, text="3/3")
+plotshape(buy2,  "2/3 Buy",  shape.triangleup,   location.belowbar, color.new(color.aqua,   20), size=size.tiny,  text="2/3")
+plotshape(sell2, "2/3 Sell", shape.triangledown,  location.abovebar, color.new(color.orange, 20), size=size.tiny,  text="2/3")
+
+// ═══════════════════════════════════════════════════════
+// DASHBOARD
+// ═══════════════════════════════════════════════════════
+var table dash = table.new(position.top_right, 2, 9, bgcolor=color.new(color.black, 20), border_width=1)
+
+if barstate.islast
+    table.cell(dash, 0, 0, "BOUNCER V3 [HA]", text_color=color.orange)
+    table.cell(dash, 1, 0, "SCORE: " + str.tostring(triScore) + "/3", text_color=(match3 ? color.lime : match2 ? color.yellow : color.white))
+
+    table.cell(dash, 0, 1, "Session Δ",   text_color=color.white)
+    table.cell(dash, 1, 1, str.tostring(sessionDelta, "#"), bgcolor=sessionDelta > 0 ? color.new(color.lime, 70) : color.new(color.red, 70), text_color=color.white)
+
+    table.cell(dash, 0, 2, "Trend",        text_color=color.white)
+    table.cell(dash, 1, 2, sessionDelta > 0 ? "BULLISH" : "BEARISH", text_color=sessionDelta > 0 ? color.lime : color.red)
+
+    table.cell(dash, 0, 3, "Cluster",      text_color=color.white)
+    table.cell(dash, 1, 3, clusterMatch ? "TIGHT" : "LOOSE", text_color=clusterMatch ? color.lime : color.red)
+
+    table.cell(dash, 0, 4, "Imbalance",    text_color=color.white)
+    table.cell(dash, 1, 4, imbActive ? "ACTIVE" : "NO", text_color=imbActive ? color.lime : color.red)
+
+    table.cell(dash, 0, 5, "Delta Force",  text_color=color.white)
+    table.cell(dash, 1, 5, deltaMomentum ? "YES" : "NO", text_color=deltaMomentum ? color.lime : color.red)
+
+    table.cell(dash, 0, 6, "Expansion",    text_color=color.white)
+    table.cell(dash, 1, 6, hasExpansion ? "YES" : "NO", text_color=hasExpansion ? color.lime : color.red)
+
+    table.cell(dash, 0, 7, "Alternation",  text_color=color.white)
+    table.cell(dash, 1, 7, isNewDir ? "NEW" : "SAME", text_color=isNewDir ? color.lime : color.yellow)
+
+    table.cell(dash, 0, 8, "Bars Since Imb", text_color=color.white)
+    table.cell(dash, 1, 8, str.tostring(ta.barssince(rawImbalance)), text_color=color.gray)
+
+// ═══════════════════════════════════════════════════════
+// ALERTS
+// ═══════════════════════════════════════════════════════
+alertcondition(buy3 or sell3 or buy2 or sell2 or hasExpansion, "Gold Bouncer V3 Alert", "Gold Bouncer V3 - Check chart for details")
+
+if buy3 or sell3 or buy2 or sell2
+    string signalType = buy3 ? "🟢 3/3 BUY" : sell3 ? "🔴 3/3 SELL" : buy2 ? "🟡 2/3 BUY" : "🟠 2/3 SELL"
+    string alertMsg   = signalType + " on " + timeframe.period + " @ " + str.tostring(close, "#.##") + " | Session Δ: " + str.tostring(sessionDelta, "#")
+    alert(alertMsg, alert.freq_once_per_bar)

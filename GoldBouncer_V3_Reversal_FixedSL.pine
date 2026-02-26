@@ -1,0 +1,149 @@
+//@version=5
+strategy("Gold Bouncer V3 - REVERSAL WITH SL", overlay=true, max_bars_back=1000,
+         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
+         initial_capital=130000, commission_type=strategy.commission.percent,
+         commission_value=0.02, slippage=2)
+
+// ═══════════════════════════════════════════════════════
+// SETTINGS
+// ═══════════════════════════════════════════════════════
+atrLength      = input.int(14,  "ATR Lookback",      group="Signal Detection")
+atrMult        = input.float(1.0, "Expansion Mult",  group="Signal Detection")
+imbalanceRatio = input.float(2.8, "Imbalance Ratio", group="Signal Detection")
+stackedBars    = input.int(2,   "Stacked Bars",       group="Signal Detection")
+memoryLookback = input.int(10,  "Max Signal Window",  group="Signal Detection")
+clusterWindow  = input.int(3,   "Cluster Proximity",  group="Signal Detection")
+
+stopLossAtr    = input.float(1.5, "Stop Loss (ATR)",  group="Risk Management")
+
+// BACKTEST PERIOD
+startDate = input.time(timestamp("2017-01-01"), "Start Date", group="Backtest Period")
+endDate   = input.time(timestamp("2026-12-31"), "End Date",   group="Backtest Period")
+inBacktest = true
+
+// ═══════════════════════════════════════════════════════
+// HEIKIN ASHI CANDLES
+// ═══════════════════════════════════════════════════════
+ha_close = (open + high + low + close) / 4
+ha_open  = float(na)
+ha_open  := na(ha_open[1]) ? (open + close) / 2 : (ha_open[1] + ha_close[1]) / 2
+ha_high  = math.max(high, math.max(ha_open, ha_close))
+ha_low   = math.min(low,  math.min(ha_open, ha_close))
+
+// ═══════════════════════════════════════════════════════
+// CORE CALCULATIONS
+// ═══════════════════════════════════════════════════════
+atr      = ta.atr(atrLength)
+bodySize = math.abs(ha_close - ha_open)
+
+isBullishBar = ha_close > ha_open
+barRange     = math.max(syminfo.mintick, ha_high - ha_low)
+buyerVol     = isBullishBar ? volume * ((ha_close - ha_low) / barRange) : volume * ((ha_high - ha_close) / barRange) * 0.3
+sellerVol    = not isBullishBar ? volume * ((ha_high - ha_close) / barRange) : volume * ((ha_close - ha_low) / barRange) * 0.3
+barDelta     = buyerVol - sellerVol
+
+var float sessionDelta = 0.0
+if (hour == 5 or hour == 17) and minute == 0
+    sessionDelta := 0.0
+sessionDelta += barDelta
+
+var int bStack = 0
+var int sStack = 0
+bStack := (sellerVol > 0 and buyerVol / sellerVol >= imbalanceRatio) ? bStack + 1 : 0
+sStack := (buyerVol > 0 and sellerVol / buyerVol >= imbalanceRatio) ? sStack + 1 : 0
+bool rawImbalance = (bStack >= stackedBars or sStack >= stackedBars)
+
+bool imbActive     = ta.barssince(rawImbalance) <= memoryLookback
+bool deltaMomentum = math.abs(barDelta) > ta.sma(math.abs(barDelta), 20) * 1.1
+bool hasExpansion  = bodySize >= (atr * atrMult)
+bool clusterMatch  = ta.barssince(deltaMomentum) <= clusterWindow and ta.barssince(hasExpansion) <= clusterWindow
+
+var int lastDir = 0
+bool isNewDir = false
+if rawImbalance
+    int currentDir = (bStack >= stackedBars) ? 1 : -1
+    if currentDir != lastDir
+        isNewDir := true
+        lastDir  := currentDir
+
+int triScore = 0
+if imbActive
+    triScore += 1
+if deltaMomentum
+    triScore += 1
+if hasExpansion
+    triScore += 1
+
+bool match3 = triScore == 3 and clusterMatch and isNewDir
+bool buy3   = match3 and lastDir == 1
+bool sell3  = match3 and lastDir == -1
+
+// ═══════════════════════════════════════════════════════
+// STRATEGY EXECUTION
+// ═══════════════════════════════════════════════════════
+if inBacktest
+    longStop  = close - (atr * stopLossAtr)
+    shortStop = close + (atr * stopLossAtr)
+
+    if buy3
+        strategy.close("SHORT", comment="Close Short")
+        strategy.entry("LONG", strategy.long, comment="BUY")
+        strategy.exit("SL Long", "LONG", stop=longStop)
+
+    if sell3
+        strategy.close("LONG", comment="Close Long")
+        strategy.entry("SHORT", strategy.short, comment="SELL")
+        strategy.exit("SL Short", "SHORT", stop=shortStop)
+
+// ═══════════════════════════════════════════════════════
+// VISUALS
+// ═══════════════════════════════════════════════════════
+plotshape(buy3,  "3/3 Buy",  shape.triangleup,  location.belowbar, color.lime, size=size.small, text="3/3")
+plotshape(sell3, "3/3 Sell", shape.triangledown, location.abovebar, color.red,  size=size.small, text="3/3")
+
+// ═══════════════════════════════════════════════════════
+// DASHBOARD
+// ═══════════════════════════════════════════════════════
+var table perf = table.new(position.bottom_right, 2, 8, bgcolor=color.new(color.black, 10), border_width=2)
+
+if barstate.islast
+    totalTrades  = strategy.closedtrades
+    winningTrades = strategy.wintrades
+    losingTrades = strategy.losstrades
+    winRate      = totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0
+    profitFactor = strategy.grossloss != 0 ? math.abs(strategy.grossprofit / strategy.grossloss) : 0
+    avgWin       = winningTrades > 0 ? strategy.grossprofit / winningTrades : 0
+    avgLoss      = losingTrades  > 0 ? strategy.grossloss  / losingTrades  : 0
+
+    table.cell(perf, 0, 0, "REVERSAL + SL [HA]", text_color=color.orange, text_size=size.normal)
+    table.cell(perf, 1, 0, "", text_color=color.white)
+
+    table.cell(perf, 0, 1, "Total Trades",  text_color=color.white)
+    table.cell(perf, 1, 1, str.tostring(totalTrades), text_color=color.white)
+
+    table.cell(perf, 0, 2, "Win Rate",      text_color=color.white)
+    table.cell(perf, 1, 2, str.tostring(winRate, "#.#") + "%", text_color=winRate >= 50 ? color.lime : color.red)
+
+    table.cell(perf, 0, 3, "Profit Factor", text_color=color.white)
+    table.cell(perf, 1, 3, str.tostring(profitFactor, "#.##"), text_color=profitFactor >= 1.5 ? color.lime : profitFactor >= 1.0 ? color.yellow : color.red)
+
+    table.cell(perf, 0, 4, "Net Profit",    text_color=color.white)
+    table.cell(perf, 1, 4, "$" + str.tostring(strategy.netprofit, "#,###"), text_color=strategy.netprofit > 0 ? color.lime : color.red)
+
+    table.cell(perf, 0, 5, "Avg Win",       text_color=color.white)
+    table.cell(perf, 1, 5, "$" + str.tostring(avgWin,  "#.##"), text_color=color.lime)
+
+    table.cell(perf, 0, 6, "Avg Loss",      text_color=color.white)
+    table.cell(perf, 1, 6, "$" + str.tostring(math.abs(avgLoss), "#.##"), text_color=color.red)
+
+    table.cell(perf, 0, 7, "Session Δ",     text_color=color.white)
+    table.cell(perf, 1, 7, str.tostring(sessionDelta, "#"), text_color=sessionDelta > 0 ? color.lime : color.red)
+
+// ═══════════════════════════════════════════════════════
+// ALERTS
+// ═══════════════════════════════════════════════════════
+alertcondition(buy3 or sell3, "Gold Bouncer V3 Alert", "Gold Bouncer V3 - Check chart for details")
+
+if buy3 or sell3
+    string signalType = buy3 ? "🟢 3/3 BUY" : "🔴 3/3 SELL"
+    alert(signalType + " | " + syminfo.ticker + " " + timeframe.period + " @ " + str.tostring(close, "#.##"), alert.freq_once_per_bar)
