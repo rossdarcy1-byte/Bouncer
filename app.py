@@ -19,8 +19,8 @@ app = Flask(__name__)
 
 # ─── BYBIT CLIENT ────────────────────────────────────────────────────────────
 client = BybitClient(
-    api_key    = os.environ.get("BYBIT_API_KEY", ""),
-    api_secret = os.environ.get("BYBIT_API_SECRET", ""),
+    api_key    = os.environ.get("BOT1_API_KEY", ""),
+    api_secret = os.environ.get("BOT1_API_SECRET", ""),
     testnet    = os.environ.get("BYBIT_TESTNET", "true").lower() == "true"
 )
 
